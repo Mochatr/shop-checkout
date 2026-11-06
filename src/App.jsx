@@ -10,6 +10,7 @@ import {
   newReference,
   waitForPayment,
 } from './solana';
+import { connectWallet, findBrowserWallets, payWithBrowserWallet } from './wallet';
 
 // --- Small helpers for saving data in the browser (no server needed) ---
 function load(key, fallback) {
@@ -105,13 +106,14 @@ function SetupScreen({ onSave }) {
         />
       </label>
       {wallet && !walletOk && <p className="error">That doesn't look like a Solana address.</p>}
+      <UseBrowserWalletButton onAddress={setWallet} />
 
       <button className="primary" disabled={!name.trim() || !walletOk}>
         Save and open register
       </button>
       <p className="hint">
-        No wallet yet? Install <a href="https://phantom.com" target="_blank" rel="noreferrer">Phantom</a>,
-        copy your address from it, and paste it here.
+        No wallet yet? Install the <a href="https://phantom.com" target="_blank" rel="noreferrer">Phantom</a>{' '}
+        browser extension and switch it to Devnet (Settings → Developer Settings → Testnet Mode).
       </p>
     </form>
   );
@@ -274,7 +276,8 @@ function PaymentScreen({ shop, sale, onPaid, onDone }) {
           <p className="status">
             <span className="spinner" /> Waiting for payment…
           </p>
-          <p className="hint">Scan with a Solana wallet app (e.g. Phantom) to pay.</p>
+          <p className="hint">Scan with a Solana wallet app to pay, or pay from this computer:</p>
+          <BrowserPayButton shop={shop} sale={sale} />
           <div className="row">
             <a className="secondary" href={url}>Open in wallet</a>
             <button className="secondary" onClick={() => navigator.clipboard?.writeText(url)}>
@@ -308,4 +311,87 @@ function PaymentScreen({ shop, sale, onPaid, onDone }) {
       )}
     </div>
   );
+}
+
+// Fills the shop's wallet address from a browser wallet extension (e.g. Phantom).
+function UseBrowserWalletButton({ onAddress }) {
+  const [wallets] = useState(findBrowserWallets);
+  const [error, setError] = useState('');
+  if (!wallets.length) return null;
+  return (
+    <>
+      <button
+        type="button"
+        className="secondary"
+        onClick={async () => {
+          setError('');
+          try {
+            const account = await connectWallet(wallets[0]);
+            onAddress(account.address);
+          } catch (e) {
+            setError(e.message || 'Wallet connection was cancelled');
+          }
+        }}
+      >
+        Use my {wallets[0].name} address
+      </button>
+      {error && <p className="error">{error}</p>}
+    </>
+  );
+}
+
+// Lets a customer pay this sale with a browser wallet extension instead of scanning the QR code.
+function BrowserPayButton({ shop, sale }) {
+  const [wallets] = useState(findBrowserWallets);
+  const [state, setState] = useState('idle'); // idle | busy | sent
+  const [error, setError] = useState('');
+  if (!wallets.length) {
+    return <p className="hint">(Install the Phantom browser extension to pay from this computer.)</p>;
+  }
+  const wallet = wallets[0];
+
+  async function pay() {
+    setError('');
+    setState('busy');
+    try {
+      const account = await connectWallet(wallet);
+      if (account.address === shop.wallet) {
+        throw new Error(
+          `This ${wallet.name} account is the shop's own wallet. Switch to a different (customer) account in ${wallet.name} and try again.`,
+        );
+      }
+      await payWithBrowserWallet({
+        wallet,
+        account,
+        recipient: shop.wallet,
+        amount: sale.amount,
+        currency: sale.currency,
+        reference: sale.reference,
+      });
+      setState('sent'); // the register will flip to "Paid" once the network confirms it
+    } catch (e) {
+      console.error(e);
+      setError(friendlyError(e));
+      setState('idle');
+    }
+  }
+
+  return (
+    <>
+      <button className="primary" onClick={pay} disabled={state !== 'idle'}>
+        {state === 'idle' && `Pay with ${wallet.name}`}
+        {state === 'busy' && `Approve in ${wallet.name}…`}
+        {state === 'sent' && 'Sent, confirming…'}
+      </button>
+      {error && <p className="error">{error}</p>}
+    </>
+  );
+}
+
+function friendlyError(e) {
+  const msg = e?.message || String(e);
+  if (/reject|cancel|denied/i.test(msg)) return 'Payment was cancelled in the wallet.';
+  if (/account.*not.*found|AccountNotFound|sender not found|could not find account|insufficient/i.test(msg))
+    return "This wallet doesn't have enough of that currency on devnet. Get free test funds from a faucet.";
+  return msg;
 }
