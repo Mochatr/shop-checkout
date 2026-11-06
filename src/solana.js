@@ -51,12 +51,19 @@ export async function waitForPayment({ recipient, amount, currency, reference, s
   while (!signal.aborted) {
     try {
       const found = await findReference(rpc, reference, { commitment: 'confirmed' });
-      await validateTransfer(
-        rpc,
-        found.signature,
-        { recipient: address(recipient), amount, splToken: CURRENCIES[currency].mint, reference },
-        { commitment: 'confirmed' },
-      );
+      try {
+        await validateTransfer(
+          rpc,
+          found.signature,
+          { recipient: address(recipient), amount, splToken: CURRENCIES[currency].mint, reference },
+          { commitment: 'confirmed' },
+        );
+      } catch (err) {
+        // The official check can't handle a shop's FIRST token payment: its token account is
+        // created inside that same transaction, so there's no "before" balance. Check it ourselves.
+        if (!(err instanceof ValidateTransferError && err.message === 'missing balance data')) throw err;
+        await validateTokenPaymentToNewAccount({ signature: found.signature, recipient, amount, currency, reference });
+      }
       return found.signature;
     } catch (err) {
       // "not found" just means the customer hasn't paid yet (or the network is still catching up): keep waiting.
@@ -68,6 +75,35 @@ export async function waitForPayment({ recipient, amount, currency, reference, s
     await sleep(1500);
   }
   return null;
+}
+
+// Reads the transaction and checks: it succeeded, it carries our reference, and the shop's
+// token balance went up by at least the sale amount (a missing "before" balance counts as 0).
+export async function validateTokenPaymentToNewAccount({ signature, recipient, amount, currency, reference }) {
+  const mint = CURRENCIES[currency].mint;
+  if (!mint) throw new ValidateTransferError('missing balance data');
+  const tx = await rpc
+    .getTransaction(signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' })
+    .send();
+  checkTokenPayment(tx, { recipient, amount, mint, reference });
+}
+
+// Pure check on a parsed transaction (kept separate so it's easy to test).
+export function checkTokenPayment(tx, { recipient, amount, mint, reference }) {
+  if (!tx) throw new ValidateTransferError('not found');
+  if (tx.meta.err) throw new ValidateTransferError('transaction failed');
+
+  const keys = tx.transaction.message.accountKeys.map((k) => k.pubkey);
+  if (!keys.includes(reference)) throw new ValidateTransferError('invalid reference');
+
+  const shopBalance = (list) => list?.find((b) => b.owner === recipient && b.mint === mint);
+  const post = shopBalance(tx.meta.postTokenBalances);
+  if (!post) throw new ValidateTransferError('invalid transfer');
+  const pre = shopBalance(tx.meta.preTokenBalances);
+
+  const received = BigInt(post.uiTokenAmount.amount) - BigInt(pre?.uiTokenAmount.amount ?? '0');
+  const expected = BigInt(Math.round(amount * 10 ** post.uiTokenAmount.decimals));
+  if (received < expected) throw new ValidateTransferError('amount not transferred');
 }
 
 export function explorerTxUrl(signature) {
