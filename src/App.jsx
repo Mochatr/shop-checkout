@@ -10,7 +10,17 @@ import {
   newReference,
   waitForPayment,
 } from './solana';
-import { connectWallet, findBrowserWallets, payWithBrowserWallet } from './wallet';
+import { connectWallet, findBrowserWallets, payWithBrowserWallet, sendSolWithBrowserWallet } from './wallet';
+import {
+  STAMPS_FOR_REWARD,
+  awardStamp,
+  createRewardsSigner,
+  createStampToken,
+  findPayer,
+  getSolBalance,
+  getStampBalance,
+  loadRewardsSigner,
+} from './loyalty';
 
 // --- Small helpers for saving data in the browser (no server needed) ---
 function load(key, fallback) {
@@ -31,9 +41,15 @@ function save(key, value) {
 const short = (addr) => `${addr.slice(0, 4)}…${addr.slice(-4)}`;
 
 export default function App() {
-  const [shop, setShop] = useState(() => load('shop', null)); // { name, wallet }
+  const [shop, setShop] = useState(() => load('shop', null)); // { name, wallet, stampMint? }
+  const [editing, setEditing] = useState(false);
   const [sale, setSale] = useState(null); // the payment currently on screen
   const [history, setHistory] = useState(() => load('sales', []));
+  const [rewardsSigner, setRewardsSigner] = useState(null); // signs stamp transactions
+
+  useEffect(() => {
+    loadRewardsSigner().then(setRewardsSigner).catch(console.error);
+  }, []);
 
   useEffect(() => save('shop', shop), [shop]);
   useEffect(() => save('sales', history), [history]);
@@ -50,12 +66,19 @@ export default function App() {
       </header>
 
       <main>
-        {!shop ? (
-          <SetupScreen onSave={setShop} />
+        {!shop || editing ? (
+          <SetupScreen
+            shop={shop}
+            onSave={(changes) => {
+              setShop((old) => ({ ...old, ...changes })); // keeps the stamp token when editing
+              setEditing(false);
+            }}
+          />
         ) : sale ? (
           <PaymentScreen
             shop={shop}
             sale={sale}
+            rewardsSigner={rewardsSigner}
             onPaid={recordSale}
             onDone={() => setSale(null)}
           />
@@ -63,8 +86,11 @@ export default function App() {
           <RegisterScreen
             shop={shop}
             history={history}
+            rewardsSigner={rewardsSigner}
+            onRewardsSigner={setRewardsSigner}
+            onUpdateShop={(changes) => setShop((old) => ({ ...old, ...changes }))}
             onCharge={setSale}
-            onEditShop={() => setShop(null)}
+            onEditShop={() => setEditing(true)}
           />
         )}
       </main>
@@ -73,8 +99,7 @@ export default function App() {
 }
 
 // 1) First run: the shop owner says where payments should go.
-function SetupScreen({ onSave }) {
-  const saved = load('shop', null);
+function SetupScreen({ shop: saved, onSave }) {
   const [name, setName] = useState(saved?.name || '');
   const [wallet, setWallet] = useState(saved?.wallet || '');
   const walletOk = isValidWallet(wallet);
@@ -120,7 +145,7 @@ function SetupScreen({ onSave }) {
 }
 
 // 2) The register: enter a price, pick a currency, charge.
-function RegisterScreen({ shop, history, onCharge, onEditShop }) {
+function RegisterScreen({ shop, history, rewardsSigner, onRewardsSigner, onUpdateShop, onCharge, onEditShop }) {
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [currency, setCurrency] = useState('USDC');
@@ -180,6 +205,23 @@ function RegisterScreen({ shop, history, onCharge, onEditShop }) {
         </button>
       </form>
 
+      <LoyaltyCard
+        shop={shop}
+        rewardsSigner={rewardsSigner}
+        onRewardsSigner={onRewardsSigner}
+        onUpdateShop={onUpdateShop}
+        onRedeem={() =>
+          onCharge({
+            amount: STAMPS_FOR_REWARD,
+            currency: 'STAMPS',
+            mint: shop.stampMint,
+            note: 'Free coffee 🎁',
+            reference: newReference(),
+            createdAt: Date.now(),
+          })
+        }
+      />
+
       <section className="card">
         <h2>Recent sales</h2>
         {history.length === 0 ? (
@@ -215,7 +257,7 @@ function RegisterScreen({ shop, history, onCharge, onEditShop }) {
 }
 
 // 3) Show the QR code and wait until the payment lands on-chain.
-function PaymentScreen({ shop, sale, onPaid, onDone }) {
+function PaymentScreen({ shop, sale, rewardsSigner, onPaid, onDone }) {
   const [status, setStatus] = useState('waiting'); // waiting | paid | error
   const [signature, setSignature] = useState(null);
   const [error, setError] = useState('');
@@ -225,6 +267,7 @@ function PaymentScreen({ shop, sale, onPaid, onDone }) {
     recipient: shop.wallet,
     amount: sale.amount,
     currency: sale.currency,
+    mint: sale.mint,
     reference: sale.reference,
     shopName: shop.name,
     note: sale.note,
@@ -245,6 +288,7 @@ function PaymentScreen({ shop, sale, onPaid, onDone }) {
       recipient: shop.wallet,
       amount: sale.amount,
       currency: sale.currency,
+      mint: sale.mint,
       reference: sale.reference,
       signal: controller.signal,
     })
@@ -291,21 +335,22 @@ function PaymentScreen({ shop, sale, onPaid, onDone }) {
       {status === 'paid' && (
         <>
           <div className="paid">✓</div>
-          <h1>Paid</h1>
+          <h1>{sale.currency === 'STAMPS' ? 'Free coffee redeemed' : 'Paid'}</h1>
           <p>
             <a href={explorerTxUrl(signature)} target="_blank" rel="noreferrer">
               View on Solana Explorer ↗
             </a>
           </p>
+          {sale.currency !== 'STAMPS' && shop.stampMint && (
+            <StampReward shop={shop} signature={signature} rewardsSigner={rewardsSigner} />
+          )}
           <button className="primary" onClick={onDone}>New sale</button>
         </>
       )}
 
       {status === 'error' && (
         <>
-          <p className="error">
-            A payment arrived but didn't match this sale: {error}
-          </p>
+          <p className="error">Something went wrong while checking this payment: {error}</p>
           <button className="primary" onClick={onDone}>Back to register</button>
         </>
       )}
@@ -366,6 +411,7 @@ function BrowserPayButton({ shop, sale }) {
         recipient: shop.wallet,
         amount: sale.amount,
         currency: sale.currency,
+        mint: sale.mint,
         reference: sale.reference,
       });
       setState('sent'); // the register will flip to "Paid" once the network confirms it
@@ -394,4 +440,199 @@ function friendlyError(e) {
   if (/account.*not.*found|AccountNotFound|sender not found|could not find account|insufficient/i.test(msg))
     return "This wallet doesn't have enough of that currency on devnet. Get free test funds from a faucet.";
   return msg;
+}
+
+// ---------------------------------------------------------------------------
+// Loyalty stamps
+// ---------------------------------------------------------------------------
+const MIN_REWARDS_SOL = 0.01; // enough for a few stamp transactions
+const TOP_UP_SOL = 0.1;
+
+function LoyaltyCard({ shop, rewardsSigner, onRewardsSigner, onUpdateShop, onRedeem }) {
+  const [balance, setBalance] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const wallets = findBrowserWallets();
+
+  const refresh = () => {
+    if (rewardsSigner) getSolBalance(rewardsSigner.address).then(setBalance).catch(() => setBalance(null));
+  };
+  useEffect(refresh, [rewardsSigner]);
+
+  async function run(label, fn) {
+    setError('');
+    setBusy(label);
+    try {
+      await fn();
+    } catch (e) {
+      console.error(e);
+      setError(friendlyError(e));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  const topUp = () =>
+    run('Approve in your wallet…', async () => {
+      const account = await connectWallet(wallets[0]);
+      await sendSolWithBrowserWallet({ wallet: wallets[0], account, to: rewardsSigner.address, sol: TOP_UP_SOL });
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const b = await getSolBalance(rewardsSigner.address);
+        setBalance(b);
+        if (b >= MIN_REWARDS_SOL) break;
+      }
+    });
+
+  const lowFunds = balance !== null && balance < MIN_REWARDS_SOL;
+  const fundingBlock = rewardsSigner && (
+    <div className="subtle">
+      <p>
+        Rewards key{' '}
+        <a href={explorerAddressUrl(rewardsSigner.address)} target="_blank" rel="noreferrer" className="mono">
+          {short(rewardsSigner.address)}
+        </a>{' '}
+        · {balance === null ? '…' : `${balance.toFixed(4)} SOL`}{' '}
+        <button className="link" onClick={refresh}>refresh</button>
+      </p>
+      {lowFunds && (
+        <>
+          <p className="hint">
+            It needs a little SOL to pay the network fees for sending stamps. Send {TOP_UP_SOL} test SOL from the
+            shop's wallet:
+          </p>
+          {wallets.length ? (
+            <button className="secondary" onClick={topUp} disabled={!!busy}>
+              Send {TOP_UP_SOL} SOL from {wallets[0].name}
+            </button>
+          ) : (
+            <p className="hint">Send it to the address above from any devnet wallet.</p>
+          )}
+        </>
+      )}
+    </div>
+  );
+
+  // Not set up yet
+  if (!shop.stampMint) {
+    return (
+      <section className="card">
+        <h2>🎟️ Loyalty stamps</h2>
+        <p className="muted">
+          Every paid purchase earns the customer 1 stamp, sent automatically to their wallet.{' '}
+          {STAMPS_FOR_REWARD} stamps = a free coffee. Customers truly own their stamps.
+        </p>
+        {!rewardsSigner ? (
+          <button
+            className="primary"
+            onClick={() => run('Creating…', async () => onRewardsSigner(await createRewardsSigner()))}
+          >
+            Set up loyalty stamps
+          </button>
+        ) : (
+          <>
+            {fundingBlock}
+            <button
+              className="primary"
+              disabled={!!busy || balance === null || lowFunds}
+              onClick={() =>
+                run('Creating your stamp token…', async () => {
+                  const { mint } = await createStampToken({
+                    signer: rewardsSigner,
+                    shopName: shop.name,
+                    metadataUri: new URL('stamp-metadata.json', window.location.href).href,
+                  });
+                  onUpdateShop({ stampMint: mint });
+                  refresh();
+                })
+              }
+            >
+              {busy || `Create "${shop.name} Stamps"`}
+            </button>
+          </>
+        )}
+        {error && <p className="error">{error}</p>}
+      </section>
+    );
+  }
+
+  // Ready
+  return (
+    <section className="card">
+      <h2>🎟️ Loyalty stamps</h2>
+      <p className="muted">
+        1 stamp per purchase · {STAMPS_FOR_REWARD} stamps = free coffee ·{' '}
+        <a href={explorerAddressUrl(shop.stampMint)} target="_blank" rel="noreferrer">
+          token ↗
+        </a>
+      </p>
+      <button className="secondary" onClick={onRedeem}>
+        🎁 Redeem a free coffee ({STAMPS_FOR_REWARD} stamps)
+      </button>
+      {rewardsSigner ? (
+        fundingBlock
+      ) : (
+        <p className="error">
+          This browser doesn't have the rewards key that created these stamps, so it can't send new ones.
+        </p>
+      )}
+      {busy && <p className="hint">{busy}</p>}
+      {error && <p className="error">{error}</p>}
+    </section>
+  );
+}
+
+// Remembers which sales already got their stamp, so a stamp is never sent twice.
+const awarded = new Set(load('awardedStamps', []));
+
+// Shown on the "Paid" screen: sends the customer their stamp and shows their progress.
+function StampReward({ shop, signature, rewardsSigner }) {
+  const [state, setState] = useState({ status: 'sending' });
+
+  useEffect(() => {
+    if (!rewardsSigner) {
+      setState({ status: 'error', message: 'No rewards key in this browser.' });
+      return;
+    }
+    if (awarded.has(signature)) return;
+    awarded.add(signature);
+    save('awardedStamps', [...awarded].slice(-200));
+
+    (async () => {
+      const customer = await findPayer(signature);
+      if (!customer || customer === shop.wallet) {
+        setState({ status: 'skipped' });
+        return;
+      }
+      await awardStamp({ signer: rewardsSigner, mint: shop.stampMint, customer });
+      const stamps = await getStampBalance(shop.stampMint, customer);
+      setState({ status: 'sent', customer, stamps });
+    })().catch((e) => {
+      console.error(e);
+      setState({ status: 'error', message: friendlyError(e) });
+    });
+  }, [signature, rewardsSigner, shop.stampMint, shop.wallet]);
+
+  if (state.status === 'skipped') return null;
+  if (state.status === 'sending') return <p className="hint">Sending a loyalty stamp…</p>;
+  if (state.status === 'error') return <p className="error">Stamp not sent: {state.message}</p>;
+
+  const progress = Math.min(state.stamps, STAMPS_FOR_REWARD);
+  return (
+    <div className="stamps">
+      <p>
+        <strong>+1 stamp</strong> for <span className="mono">{short(state.customer)}</span>
+      </p>
+      <div className="stamp-row" aria-label={`${progress} of ${STAMPS_FOR_REWARD} stamps`}>
+        {Array.from({ length: STAMPS_FOR_REWARD }, (_, i) => (
+          <span key={i} className={i < progress ? 'stamp on' : 'stamp'}>☕</span>
+        ))}
+      </div>
+      <p className="hint">
+        {state.stamps >= STAMPS_FOR_REWARD
+          ? '🎉 Next coffee is free! Use "Redeem a free coffee" on the register.'
+          : `${state.stamps} of ${STAMPS_FOR_REWARD}: ${STAMPS_FOR_REWARD - state.stamps} more for a free coffee`}
+      </p>
+    </div>
+  );
 }

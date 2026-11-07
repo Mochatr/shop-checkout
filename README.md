@@ -19,6 +19,16 @@ Built for the MLH Solana Hackathon (Best Beginner Hack track).
 Customers can pay by scanning the QR code with a mobile wallet, or with the **Pay with Phantom**
 button using a browser wallet extension (via the Wallet Standard).
 
+### Loyalty stamps 🎟️
+
+- Each shop creates its own **stamp token** (Token-2022, with its name and symbol stored on-chain so wallets
+  like Phantom show it). Stamps are whole numbers (0 decimals).
+- **1 stamp per paid purchase**, sent automatically to the customer's wallet right after payment, by a
+  small *rewards key* kept in the shop's browser (the only key allowed to create stamps).
+- **10 stamps = a free coffee**: the register charges "10 STAMPS" and the customer pays with stamps,
+  using the exact same Solana Pay checkout (QR code or browser wallet).
+- Customers truly own their stamps: they sit in their wallet like any other token.
+
 No backend or smart contract: everything runs in the browser and talks to Solana's public RPC.
 Runs on **devnet** (test network, free test tokens).
 
@@ -31,4 +41,4 @@ npm run dev
 
 ## Tech
 
-React + Vite · `@solana/kit` · `@solana/pay`
+React + Vite · `@solana/kit` · `@solana/pay` · `@solana-program/token-2022` · Wallet Standard

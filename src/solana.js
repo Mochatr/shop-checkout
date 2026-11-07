@@ -20,6 +20,11 @@ export const CURRENCIES = {
   SOL: { symbol: 'SOL', mint: undefined },
 };
 
+// The token address for a sale. Stamps pass their own `mint` (each shop has its own stamp token).
+export function mintFor(currency, mint) {
+  return mint ? address(mint) : CURRENCIES[currency]?.mint;
+}
+
 export function isValidWallet(value) {
   return isAddress(value.trim());
 }
@@ -32,11 +37,11 @@ export function newReference() {
 }
 
 // Builds the `solana:` payment link that the QR code contains.
-export function buildPaymentUrl({ recipient, amount, currency, reference, shopName, note }) {
+export function buildPaymentUrl({ recipient, amount, currency, mint, reference, shopName, note }) {
   return encodeURL({
     recipient: address(recipient),
     amount,
-    splToken: CURRENCIES[currency].mint,
+    splToken: mintFor(currency, mint),
     reference,
     label: shopName,
     message: note || `Order at ${shopName}`,
@@ -47,7 +52,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Checks the network every 1.5 seconds until a transaction carrying our reference shows up,
 // then verifies it paid the right person the right amount. Returns the transaction signature.
-export async function waitForPayment({ recipient, amount, currency, reference, signal }) {
+export async function waitForPayment({ recipient, amount, currency, mint, reference, signal }) {
   while (!signal.aborted) {
     try {
       const found = await findReference(rpc, reference, { commitment: 'confirmed' });
@@ -55,14 +60,14 @@ export async function waitForPayment({ recipient, amount, currency, reference, s
         await validateTransfer(
           rpc,
           found.signature,
-          { recipient: address(recipient), amount, splToken: CURRENCIES[currency].mint, reference },
+          { recipient: address(recipient), amount, splToken: mintFor(currency, mint), reference },
           { commitment: 'confirmed' },
         );
       } catch (err) {
         // The official check can't handle a shop's FIRST token payment: its token account is
         // created inside that same transaction, so there's no "before" balance. Check it ourselves.
         if (!(err instanceof ValidateTransferError && err.message === 'missing balance data')) throw err;
-        await validateTokenPaymentToNewAccount({ signature: found.signature, recipient, amount, currency, reference });
+        await validateTokenPaymentToNewAccount({ signature: found.signature, recipient, amount, currency, mint, reference });
       }
       return found.signature;
     } catch (err) {
@@ -79,8 +84,8 @@ export async function waitForPayment({ recipient, amount, currency, reference, s
 
 // Reads the transaction and checks: it succeeded, it carries our reference, and the shop's
 // token balance went up by at least the sale amount (a missing "before" balance counts as 0).
-export async function validateTokenPaymentToNewAccount({ signature, recipient, amount, currency, reference }) {
-  const mint = CURRENCIES[currency].mint;
+export async function validateTokenPaymentToNewAccount({ signature, recipient, amount, currency, mint: saleMint, reference }) {
+  const mint = mintFor(currency, saleMint);
   if (!mint) throw new ValidateTransferError('missing balance data');
   const tx = await rpc
     .getTransaction(signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' })

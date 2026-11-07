@@ -15,14 +15,13 @@ import {
   AccountRole,
 } from '@solana/kit';
 import {
-  fetchMint,
   getCreateAssociatedTokenIdempotentInstructionAsync,
   getTransferCheckedInstruction,
   findAssociatedTokenPda,
-  TOKEN_PROGRAM_ADDRESS,
 } from '@solana-program/token';
+import { getTransferSolInstruction } from '@solana-program/system';
 import { createTransfer } from '@solana/pay';
-import { CURRENCIES, NETWORK, rpc } from './solana';
+import { NETWORK, mintFor, rpc } from './solana';
 
 const CHAIN = `solana:${NETWORK}`;
 
@@ -41,20 +40,33 @@ export async function connectWallet(wallet) {
 }
 
 // Build the payment transaction for a sale, then have the wallet sign & send it.
-export async function payWithBrowserWallet({ wallet, account, recipient, amount, currency, reference }) {
+export async function payWithBrowserWallet({ wallet, account, recipient, amount, currency, mint, reference }) {
   const payer = createNoopSigner(address(account.address)); // the wallet does the real signing
   const instructions = await buildPaymentInstructions({
     payer,
     recipient: address(recipient),
     amount,
-    currency,
+    mint: mintFor(currency, mint),
     reference,
   });
+  return signAndSendWithBrowserWallet({ wallet, account, instructions });
+}
 
+// Send SOL from the browser wallet (used to top up the shop's rewards key).
+export async function sendSolWithBrowserWallet({ wallet, account, to, sol }) {
+  const source = createNoopSigner(address(account.address));
+  const instructions = [
+    getTransferSolInstruction({ source, destination: address(to), amount: BigInt(Math.round(sol * 1e9)) }),
+  ];
+  return signAndSendWithBrowserWallet({ wallet, account, instructions });
+}
+
+async function signAndSendWithBrowserWallet({ wallet, account, instructions }) {
+  const feePayer = address(account.address);
   const { value: latestBlockhash } = await rpc.getLatestBlockhash({ commitment: 'confirmed' }).send();
   const message = pipe(
     createTransactionMessage({ version: 0 }),
-    (m) => setTransactionMessageFeePayer(payer.address, m),
+    (m) => setTransactionMessageFeePayer(feePayer, m),
     (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
     (m) => appendTransactionMessageInstructions(instructions, m),
   );
@@ -68,33 +80,42 @@ export async function payWithBrowserWallet({ wallet, account, recipient, amount,
   return getBase58Decoder().decode(result.signature);
 }
 
-async function buildPaymentInstructions({ payer, recipient, amount, currency, reference }) {
-  const mint = CURRENCIES[currency].mint;
+async function buildPaymentInstructions({ payer, recipient, amount, mint, reference }) {
   if (!mint) {
     // SOL: the official Solana Pay helper builds the transfer + reference for us.
     return createTransfer(rpc, payer, { recipient, amount, reference });
   }
 
-  // USDC (an SPL token). Tokens live in "token accounts" owned by each wallet.
-  // If the shop has never received USDC, its token account doesn't exist yet,
+  // Tokens (USDC, stamps) live in "token accounts" owned by each wallet.
+  // If the shop has never received this token, its token account doesn't exist yet,
   // so we create it first (the customer pays the tiny rent for it).
-  const { data: mintInfo } = await fetchMint(rpc, mint);
-  const [source] = await findAssociatedTokenPda({ owner: payer.address, mint, tokenProgram: TOKEN_PROGRAM_ADDRESS });
+  // Tokens can belong to the classic Token program or Token-2022 (our stamps), so look it up.
+  const mintAccount = await rpc.getAccountInfo(mint, { encoding: 'base64' }).send();
+  if (!mintAccount.value) throw new Error('Token not found on ' + NETWORK);
+  const tokenProgram = mintAccount.value.owner;
+  const { value: supply } = await rpc.getTokenSupply(mint).send();
+  const decimals = supply.decimals;
+
+  const [source] = await findAssociatedTokenPda({ owner: payer.address, mint, tokenProgram });
   const createShopAccount = await getCreateAssociatedTokenIdempotentInstructionAsync({
     payer,
     owner: recipient,
     mint,
+    tokenProgram,
   });
   const destination = createShopAccount.accounts[1].address;
 
-  const transfer = getTransferCheckedInstruction({
-    source,
-    mint,
-    destination,
-    authority: payer,
-    amount: BigInt(Math.round(amount * 10 ** mintInfo.decimals)),
-    decimals: mintInfo.decimals,
-  });
+  const transfer = getTransferCheckedInstruction(
+    {
+      source,
+      mint,
+      destination,
+      authority: payer,
+      amount: BigInt(Math.round(amount * 10 ** decimals)),
+      decimals,
+    },
+    { programAddress: tokenProgram }, // same instruction layout in both token programs
+  );
   // Attach the sale's reference so the register can find this payment.
   const transferWithReference = {
     ...transfer,

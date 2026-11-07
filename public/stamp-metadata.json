@@ -1,0 +1,6 @@
+{
+  "name": "Coffee Stamp",
+  "symbol": "STAMP",
+  "description": "Loyalty stamp from a Shop Checkout café. 1 stamp per purchase; 10 stamps = 1 free coffee.",
+  "image": "https://mochatr.github.io/shop-checkout/stamp.png"
+}
