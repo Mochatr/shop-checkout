@@ -8,6 +8,16 @@ Built for the MLH Solana Hackathon (Best Beginner Hack track).
 
 **Live demo:** https://mochatr.github.io/shop-checkout/ (devnet)
 
+## Features
+
+- **Register** – a big keypad (works with a physical keyboard too), USDC / SOL switch, one Charge button.
+- **Checkout** – a Solana Pay QR code for mobile wallets, or *Pay with Phantom* from the browser.
+  The register detects the payment on-chain and shows **Paid ✓** within seconds.
+- **Loyalty stamps** – 1 stamp per purchase sent automatically to the customer's wallet; 10 = a free coffee.
+- **Dashboard** – sales, revenue per currency, unique and returning customers, a 7-day sales chart,
+  live wallet balances, top customers, and every sale linked to its on-chain proof. Export to CSV.
+- **Guided setup** – shop name, payout wallet, then optional loyalty stamps, in three steps.
+
 ## How it works
 
 1. **Set up** – the shop enters its name and Solana wallet address (stored in the browser).
