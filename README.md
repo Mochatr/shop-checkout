@@ -8,6 +8,9 @@ Built for the MLH Solana Hackathon (Best Beginner Hack track).
 
 **Live demo:** https://mochatr.github.io/shop-checkout/ (devnet)
 
+**Walkthrough video (1 min):** [docs/walkthrough.mp4](docs/walkthrough.mp4), a captioned tour of the app.
+The dashboard in it shows sample data.
+
 ## Features
 
 - **Register** – a big keypad (works with a physical keyboard too), USDC / SOL switch, one Charge button.
