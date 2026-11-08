@@ -8,8 +8,8 @@ Built for the MLH Solana Hackathon (Best Beginner Hack track).
 
 **Live demo:** https://mochatr.github.io/shop-checkout/ (devnet)
 
-**Walkthrough video (1 min):** [docs/walkthrough.mp4](docs/walkthrough.mp4), a captioned tour of the app.
-The dashboard in it shows sample data.
+**Demo video:** https://youtu.be/iWrzpG6GL0I (also in the repo: [docs/walkthrough.mp4](docs/walkthrough.mp4)).
+A captioned 1-minute tour of the app; the dashboard in it shows sample data.
 
 ## Features
 
