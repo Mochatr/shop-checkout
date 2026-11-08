@@ -196,7 +196,46 @@ export function StampReward({ shop, signature, customer, rewardsSigner }) {
   if (state.status === 'skipped') return null;
   if (state.status === 'sending') return <p className="hint">Sending a loyalty stamp…</p>;
   if (state.status === 'error') return <p className="error">Stamp not sent: {state.message}</p>;
-  return <StampCard stamps={state.stamps} customer={customer} />;
+  return (
+    <>
+      <StampCard stamps={state.stamps} customer={customer} />
+      {state.stamps < STAMPS_FOR_REWARD && (
+        <DemoStampsButton shop={shop} customer={customer} rewardsSigner={rewardsSigner} onDone={(stamps) => setState({ status: 'sent', stamps })} />
+      )}
+    </>
+  );
+}
+
+// DEMO ONLY: tops a customer up to a full card so a free-coffee redemption can be shown quickly.
+const DEMO_STAMPS = STAMPS_FOR_REWARD - 1;
+function DemoStampsButton({ shop, customer, rewardsSigner, onDone }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  return (
+    <>
+      <button
+        className="secondary small"
+        disabled={busy}
+        title="Demo shortcut: not part of a real shop's flow"
+        onClick={async () => {
+          setBusy(true);
+          setError('');
+          try {
+            await awardStamp({ signer: rewardsSigner, mint: shop.stampMint, customer, count: DEMO_STAMPS });
+            onDone(await getStampBalance(shop.stampMint, customer));
+          } catch (e) {
+            console.error(e);
+            setError(friendlyError(e));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? 'Sending demo stamps…' : `Demo: give ${DEMO_STAMPS} stamps`}
+      </button>
+      {error && <p className="error">{error}</p>}
+    </>
+  );
 }
 
 export function StampCard({ stamps, customer }) {

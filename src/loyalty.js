@@ -105,11 +105,12 @@ export async function buildStampTokenInstructions({ payer: signer, mint, shopNam
 }
 
 // Give one stamp to a customer (creates their stamp account the first time).
-export async function awardStamp({ signer, mint, customer }) {
-  return sendWithSigner(signer, await buildAwardStampInstructions({ signer, mint, customer }));
+// Give stamps to a customer (1 per purchase; more only for the demo shortcut).
+export async function awardStamp({ signer, mint, customer, count = 1 }) {
+  return sendWithSigner(signer, await buildAwardStampInstructions({ signer, mint, customer, count }));
 }
 
-export async function buildAwardStampInstructions({ signer, mint, customer }) {
+export async function buildAwardStampInstructions({ signer, mint, customer, count = 1 }) {
   const owner = address(customer);
   const createAccount = await getCreateAssociatedTokenIdempotentInstructionAsync({
     payer: signer,
@@ -121,7 +122,7 @@ export async function buildAwardStampInstructions({ signer, mint, customer }) {
     mint: address(mint),
     token: createAccount.accounts[1].address, // the customer's stamp account
     mintAuthority: signer,
-    amount: 1n,
+    amount: BigInt(count),
     decimals: 0,
   });
   return [createAccount, mintTo];
